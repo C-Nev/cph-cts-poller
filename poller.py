@@ -7,16 +7,15 @@ Two routings are tracked and compared on total cost:
 Uses the public GraphQL endpoint kiwi.com's own front end calls. No API key:
 Kiwi's Tequila developer programme is invite-only and no longer issues keys.
 
-Alerts are emailed over Gmail SMTP. Set SMTP_USER, SMTP_PASSWORD (a Google app
-password, not the account password) and optionally ALERT_EMAIL_TO.
+Alerts are emailed through Resend. Set RESEND_API_KEY and ALERT_EMAIL_TO.
+Until a domain is verified with Resend, ALERT_EMAIL_TO must be the address the
+Resend account was registered with, and the sender stays onboarding@resend.dev.
 """
 
 import json
 import os
-import smtplib
 import sys
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from pathlib import Path
 
 import requests
@@ -76,8 +75,10 @@ MAX_ALERTS_PER_RUN = 3
 CACHE_PATH = Path(__file__).with_name("seen_fares.json")
 REQUEST_TIMEOUT = 90
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 465
+RESEND_URL = "https://api.resend.com/emails"
+# resend.dev is the unverified-domain sender. Override once a real domain is
+# verified, e.g. ALERT_EMAIL_FROM="Fare poller <alerts@polliknow.com>".
+DEFAULT_FROM = "Fare poller <onboarding@resend.dev>"
 
 SEARCH_QUERY = """
 query SearchReturnItinerariesQuery(
@@ -410,17 +411,23 @@ def build_heartbeat(candidates, cache):
 
 
 def notify(subject, body):
-    """Send one alert over Gmail SMTP."""
-    user = os.environ["SMTP_USER"]
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = user
-    message["To"] = os.environ.get("ALERT_EMAIL_TO") or user
-    message.set_content(body)
-
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
-        smtp.login(user, os.environ["SMTP_PASSWORD"])
-        smtp.send_message(message)
+    """Send one alert through Resend."""
+    response = requests.post(
+        RESEND_URL,
+        headers={
+            "Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": os.environ.get("ALERT_EMAIL_FROM") or DEFAULT_FROM,
+            "to": [os.environ["ALERT_EMAIL_TO"]],
+            "subject": subject,
+            "text": body,
+        },
+        timeout=30,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Resend rejected the email ({response.status_code}): {response.text}")
 
 
 def gather():
@@ -466,7 +473,7 @@ def gather():
 
 def main():
     dry_run = os.environ.get("DRY_RUN") == "1"
-    missing = [k for k in ("SMTP_USER", "SMTP_PASSWORD") if not os.environ.get(k)]
+    missing = [k for k in ("RESEND_API_KEY", "ALERT_EMAIL_TO") if not os.environ.get(k)]
     if missing and not dry_run:
         sys.exit(f"{' and '.join(missing)} must be set (or set DRY_RUN=1).")
 

@@ -24,26 +24,26 @@ inventory. It is undocumented and unversioned, so treat a schema change as a
 
 ## Setup
 
-Alerts go out over Gmail SMTP. Add two repository *secrets* (Settings >
-Secrets and variables > Actions > New repository secret):
+Alerts go out through [Resend](https://resend.com) (free tier: 3,000/month).
+Add one repository *secret* (Settings > Secrets and variables > Actions):
 
 | Secret | Value |
 |---|---|
-| `SMTP_USER` | your Gmail address |
-| `SMTP_PASSWORD` | a Google **app password**, not your account password |
+| `RESEND_API_KEY` | API key from resend.com/api-keys, starts `re_` |
 
-App passwords need 2-Step Verification switched on, then are generated at
-https://myaccount.google.com/apppasswords. Revoking one there kills only this
-poller's access, nothing else.
+Resend will not send to arbitrary addresses until you verify a domain. Until
+then the sender is fixed at `onboarding@resend.dev` and the only permitted
+recipient is the address the Resend account was registered with - so register
+it with the address you want the alerts.
 
-Thresholds and the destination address are repository *variables*, not secrets,
-so they can be changed without editing code:
+Settings that are not secret are repository *variables*:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `ALERT_THRESHOLD` | 8500 | Email below this DKK total |
 | `SMASH_BUY_THRESHOLD` | 7800 | Flag as a smash buy below this |
-| `ALERT_EMAIL_TO` | your `SMTP_USER` | Send alerts somewhere other than the sending account |
+| `ALERT_EMAIL_TO` | required | Where alerts go; must match your Resend account address |
+| `ALERT_EMAIL_FROM` | `onboarding@resend.dev` | Only change after verifying a domain with Resend |
 
 These replace the 5500/4500 from the original spec, which nothing on this route
 comes close to. Current floor with a hold bag and 3h layovers is ~8,960 DKK via
@@ -80,7 +80,9 @@ Three layers, because a fare poller that dies quietly is worse than no poller:
    non-zero rather than reporting success. That is the dangerous case - it looks
    identical to "no deals" but usually means the Kiwi schema moved.
 3. **Failure email.** Any failed run emails you with a link to the Actions log,
-   subject line `Fare poller FAILED`, so a break arrives the same way a deal does.
+   subject line `Fare poller FAILED`, so a break arrives the same way a deal
+   does. This cannot fire if Resend itself is the thing that broke - GitHub's
+   own failed-workflow email is the backstop for that, so keep it enabled.
 
 `seen_fares.json` is rewritten with a `last_run` timestamp every run, so the
 workflow always has something to commit. That keeps the repository active and
