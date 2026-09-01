@@ -1,0 +1,73 @@
+name: Poll CPH -> Sapporo fares
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fare-poll
+  cancel-in-progress: false
+
+env:
+  SMTP_USER: ${{ secrets.SMTP_USER }}
+  SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+  ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run poller
+        env:
+          ALERT_THRESHOLD: ${{ vars.ALERT_THRESHOLD }}
+          SMASH_BUY_THRESHOLD: ${{ vars.SMASH_BUY_THRESHOLD }}
+        run: python poller.py
+
+      - name: Email a broken run
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'EOF'
+          import os, smtplib
+          from email.message import EmailMessage
+
+          user = os.environ["SMTP_USER"]
+          msg = EmailMessage()
+          msg["Subject"] = "Fare poller FAILED - no flights are being checked"
+          msg["From"] = user
+          msg["To"] = os.environ.get("ALERT_EMAIL_TO") or user
+          msg.set_content(
+              "The CPH -> Sapporo poller failed. No fares are being checked "
+              "until this is fixed.\n\n" + os.environ["RUN_URL"]
+          )
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+              smtp.login(user, os.environ["SMTP_PASSWORD"])
+              smtp.send_message(msg)
+          EOF
+
+      - name: Persist seen-fares cache
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain seen_fares.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add seen_fares.json
+            git commit -m "chore: update seen-fares cache"
+            git push
+          else
+            echo "No cache changes."
+          fi
