@@ -30,6 +30,7 @@ Add one repository *secret* (Settings > Secrets and variables > Actions):
 | Secret | Value |
 |---|---|
 | `RESEND_API_KEY` | API key from resend.com/api-keys, starts `re_` |
+| `NTFY_TOPIC` | optional ntfy.sh topic for urgent smash-buy pushes |
 
 Resend will not send to arbitrary addresses until you verify a domain. Until
 then the sender is fixed at `onboarding@resend.dev` and the only permitted
@@ -41,7 +42,9 @@ Settings that are not secret are repository *variables*:
 | Variable | Default | Meaning |
 |---|---|---|
 | `ALERT_THRESHOLD` | 8500 | Email below this DKK total |
-| `SMASH_BUY_THRESHOLD` | 7800 | Flag as a smash buy below this |
+| `SMASH_BUY_THRESHOLD` | 7800 | Flag as a smash buy below this, and send an urgent phone push |
+| `POLL_ITERATIONS` | 10 | Search passes per scheduled run |
+| `POLL_INTERVAL_SECONDS` | 240 | Gap between passes |
 | `ALERT_EMAIL_TO` | required | Where alerts go; must match your Resend account address |
 | `ALERT_EMAIL_FROM` | `onboarding@resend.dev` | Only change after verifying a domain with Resend |
 
@@ -101,3 +104,34 @@ still expensive shows up in the weekly heartbeat instead of landing in your inbo
 
 The tier is the first thing in the subject line, so the inbox list alone tells
 you whether something needs acting on.
+
+## Polling cadence
+
+Measured over 266 runs between 1 Sep and 2 Nov 2026, a `0 */4 * * *` cron
+produced a **median gap of 6.0 hours and a worst gap of 23.9 hours** - GitHub
+fired only about 70% of the scheduled runs. Schedule resolution is therefore
+not something to rely on.
+
+Instead one trigger fires hourly and the run itself polls `POLL_ITERATIONS`
+times, `POLL_INTERVAL_SECONDS` apart, giving ~4-minute resolution from ~24
+triggers a day. A pass takes roughly 55 seconds, so the defaults occupy about
+50 minutes of the hour.
+
+**This needs a public repository.** Billed Actions minutes round up per job, so
+~50 minutes an hour is ~36,000 minutes a month against a 2,000-minute private
+allowance. Public repositories have no such limit. No credentials live in the
+code - they are repository secrets - but `seen_fares.json` does expose the
+travel dates being watched.
+
+## Why the search is shaped this way
+
+Measured 2 Nov 2026, so worth re-checking before changing any of it:
+
+- **Alternative departure airports do not help.** Frankfurt, Amsterdam, London
+  and Paris all price the long-haul 1,200-1,750 DKK below Copenhagen, but a
+  return positioning flight from CPH costs 1,310-3,103 and wipes the gap out.
+- **The 3h layover rule is nearly free.** Relaxing it to 2.5h saved 53 DKK.
+  It cost ~2,800 DKK back in September, so this is worth re-measuring, not
+  assuming.
+- **Tokyo is the only hub worth splitting through.** Seoul, Osaka, Nagoya,
+  Fukuoka, Taipei, Hong Kong and Shanghai were all more expensive all-in.

@@ -2,7 +2,7 @@ name: Poll CPH -> Sapporo fares
 
 on:
   schedule:
-    - cron: "0 */4 * * *"
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -15,6 +15,7 @@ concurrency:
 env:
   RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
   ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+  NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
 jobs:
   poll:
@@ -29,10 +30,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # One scheduled trigger polls repeatedly: GitHub honours only ~70% of a
+      # short cron, so resolution has to come from inside the run, not from it.
       - name: Run poller
+        timeout-minutes: 58
         env:
           ALERT_THRESHOLD: ${{ vars.ALERT_THRESHOLD }}
           SMASH_BUY_THRESHOLD: ${{ vars.SMASH_BUY_THRESHOLD }}
+          POLL_ITERATIONS: ${{ vars.POLL_ITERATIONS || 10 }}
+          POLL_INTERVAL_SECONDS: ${{ vars.POLL_INTERVAL_SECONDS || 240 }}
         run: python poller.py
 
       - name: Email a broken run

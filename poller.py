@@ -15,6 +15,7 @@ Resend account was registered with, and the sender stays onboarding@resend.dev.
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,6 +68,14 @@ RECORD_MARGIN = 100
 # If nothing has been posted in this long, post a status message anyway, so that
 # silence from the poller always means "no deals" and never "it died".
 HEARTBEAT_DAYS = 7
+
+# GitHub only honours roughly 70% of a short cron, so one scheduled run polls
+# repeatedly instead of relying on the schedule for resolution.
+POLL_ITERATIONS = int(os.environ.get("POLL_ITERATIONS") or 1)
+POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS") or 300)
+
+# ntfy.sh push for the fares worth interrupting you for. Optional.
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
 
 # Only re-alert a routing already seen if it got at least this much cheaper.
 PRICE_DROP_TO_REALERT = 250
@@ -410,6 +419,26 @@ def build_heartbeat(candidates, cache):
     return subject, "\n".join(lines)
 
 
+def push_urgent(subject, body, link):
+    """High-priority phone push for smash-buy fares. Silently skipped if unset."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        requests.post(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=body.encode("utf-8"),
+            headers={
+                "Title": subject,
+                "Priority": "urgent",
+                "Tags": "airplane",
+                "Click": link,
+            },
+            timeout=15,
+        ).raise_for_status()
+    except Exception as exc:  # never let the push break the email path
+        print(f"ntfy push failed: {exc}", file=sys.stderr)
+
+
 def notify(subject, body):
     """Send one alert through Resend."""
     response = requests.post(
@@ -471,21 +500,11 @@ def gather():
     return sorted(candidates, key=lambda c: c["total"])
 
 
-def main():
-    dry_run = os.environ.get("DRY_RUN") == "1"
-    missing = [k for k in ("RESEND_API_KEY", "ALERT_EMAIL_TO") if not os.environ.get(k)]
-    if missing and not dry_run:
-        sys.exit(f"{' and '.join(missing)} must be set (or set DRY_RUN=1).")
-
+def run_once(dry_run):
+    """One search pass. Returns the number of alerts sent, or None if empty."""
     candidates = gather()
-
-    # A green run that quietly found nothing is the dangerous failure: it looks
-    # identical to "no deals today". Treat it as a break instead.
     if not candidates:
-        sys.exit(
-            "No itineraries with legal layovers on either routing. "
-            "Either both routes genuinely sold out, or the Kiwi schema moved."
-        )
+        return None
 
     best = candidates[0]
     print(f"Best total: {best['total']:,.0f} {CURRENCY_LABEL} ({best['route_label']})")
@@ -519,6 +538,8 @@ def main():
                 print(f"--- {subject}\n{body}\n")
             else:
                 notify(subject, body)
+                if total < SMASH_BUY_THRESHOLD:
+                    push_urgent(subject, body, booking_url(candidate["itinerary"]))
             alerts += 1
             cache["meta"]["last_notified"] = utc_now()
 
@@ -538,7 +559,46 @@ def main():
         print("Heartbeat posted.")
 
     save_cache(cache)
-    print(f"{alerts} alert(s) sent; cache holds {len(load_cache()['fares'])} routings.")
+    return alerts
+
+
+def main():
+    dry_run = os.environ.get("DRY_RUN") == "1"
+    missing = [k for k in ("RESEND_API_KEY", "ALERT_EMAIL_TO") if not os.environ.get(k)]
+    if missing and not dry_run:
+        sys.exit(f"{' and '.join(missing)} must be set (or set DRY_RUN=1).")
+
+    total_alerts = 0
+    productive = 0
+
+    for n in range(POLL_ITERATIONS):
+        if n:
+            time.sleep(POLL_INTERVAL_SECONDS)
+        print(f"--- pass {n + 1}/{POLL_ITERATIONS} at {utc_now()}")
+        try:
+            alerts = run_once(dry_run)
+        except Exception as exc:
+            # One bad pass should not end a run that still has passes left.
+            print(f"pass {n + 1} failed: {exc}", file=sys.stderr)
+            continue
+        if alerts is None:
+            print("No itineraries with legal layovers this pass.", file=sys.stderr)
+            continue
+        productive += 1
+        total_alerts += alerts
+
+    # Only treat the run as broken if nothing worked at all: a green run that
+    # quietly found nothing looks identical to "no deals today".
+    if not productive:
+        sys.exit(
+            f"All {POLL_ITERATIONS} pass(es) failed or found nothing. "
+            "Either both routes genuinely sold out, or the Kiwi schema moved."
+        )
+
+    print(
+        f"{total_alerts} alert(s) sent across {productive}/{POLL_ITERATIONS} "
+        f"successful passes; cache holds {len(load_cache()['fares'])} routings."
+    )
 
 
 if __name__ == "__main__":
